@@ -7,14 +7,16 @@
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
   <script>
-    // Makes only the black background of sand-layer.mp4 transparent 
-    // so ONE single sand + AKS layer floats cleanly in front of ONE single sky layer
+    // 1. Makes the black background of sand-layer.mp4 transparent
     AFRAME.registerComponent('front-hologram', {
       init: function () {
-        this.el.addEventListener('loaded', () => {
+        const videoEl = document.querySelector('#sandVid');
+        const tex = new THREE.VideoTexture(videoEl);
+        tex.colorSpace = THREE.SRGBColorSpace;
+
+        const applyShader = () => {
           const mesh = this.el.getObject3D('mesh');
-          if (!mesh || !mesh.material) return;
-          const tex = mesh.material.map;
+          if (!mesh) return;
           mesh.material = new THREE.ShaderMaterial({
             uniforms: { uMap: { value: tex } },
             transparent: true,
@@ -39,7 +41,54 @@
               }
             `
           });
+        };
+
+        if (this.el.getObject3D('mesh')) {
+          applyShader();
+        } else {
+          this.el.addEventListener('object3dset', applyShader);
+        }
+      }
+    });
+
+    // 2. Smooths position and damps extreme 3D angle skewing on dark targets
+    AFRAME.registerComponent('stabilize-poster', {
+      schema: {
+        target: { type: 'selector' }
+      },
+      init: function () {
+        this.rawPos = new THREE.Vector3();
+        this.rawQuat = new THREE.Quaternion();
+        this.rawScale = new THREE.Vector3();
+        this.euler = new THREE.Euler(0, 0, 0, 'YXZ');
+        this.targetQuat = new THREE.Quaternion();
+        this.isTracking = false;
+
+        this.data.target.addEventListener('targetFound', () => {
+          this.isTracking = true;
+          this.el.object3D.visible = true;
         });
+        this.data.target.addEventListener('targetLost', () => {
+          this.isTracking = false;
+          this.el.object3D.visible = false;
+        });
+      },
+      tick: function () {
+        if (!this.isTracking) return;
+        const targetMat = this.data.target.object3D.matrix;
+        targetMat.decompose(this.rawPos, this.rawQuat, this.rawScale);
+
+        // Damp out erratic pitch/yaw spikes so the poster doesn't warp sideways
+        this.euler.setFromQuaternion(this.rawQuat, 'YXZ');
+        this.euler.x *= 0.25;
+        this.euler.y *= 0.25;
+        this.euler.z *= 0.6;
+        this.targetQuat.setFromEuler(this.euler);
+
+        // Smoothly interpolate position, rotation, and scale
+        this.el.object3D.position.lerp(this.rawPos, 0.3);
+        this.el.object3D.quaternion.slerp(this.targetQuat, 0.25);
+        this.el.object3D.scale.lerp(this.rawScale, 0.3);
       }
     });
   </script>
@@ -50,7 +99,7 @@
 </head>
 <body>
   <a-scene
-    mindar-image="imageTargetSrc: ./targets.mind; filterMinCF: 0.001; filterBeta: 0.02; warmupTolerance: 3; missTolerance: 5;"
+    mindar-image="imageTargetSrc: ./targets.mind; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 5; missTolerance: 10;"
     color-space="sRGB"
     renderer="colorManagement: true, alpha: true"
     vr-mode-ui="enabled: false"
@@ -63,18 +112,22 @@
 
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <a-entity id="target" mindar-image-target="targetIndex: 0">
+    <!-- Raw MindAR tracker -->
+    <a-entity id="target" mindar-image-target="targetIndex: 0"></a-entity>
 
-      <!-- 1. SOLID BLACK COVER PLATE (Hides the static poster underneath so it NEVER doubles) -->
+    <!-- Stabilized visual container -->
+    <a-entity visible="false" stabilize-poster="target: #target">
+
+      <!-- 1. SOLID BLACK COVER PLATE -->
       <a-plane
         color="#040302"
         position="0 0 0.0"
-        width="1.02"
-        height="1.44"
+        width="1.0"
+        height="1.414"
         material="shader: flat; opacity: 1.0">
       </a-plane>
 
-      <!-- 2. SINGLE SKY VIDEO LAYER (Sits on the back plane at z = 0.01) -->
+      <!-- 2. SINGLE SKY VIDEO LAYER -->
       <a-video
         src="#skyVid"
         position="0 0 0.01"
@@ -83,12 +136,12 @@
         material="shader: flat">
       </a-video>
 
-      <!-- 3. SINGLE SAND + ALIF + AKS LOGO LAYER (Floats forward in 3D space at z = 0.08) -->
+      <!-- 3. SINGLE SAND + ALIF + AKS LOGO LAYER -->
       <a-video
         src="#sandVid"
-        position="0 0 0.08"
-        width="1.04"
-        height="1.47"
+        position="0 0 0.025"
+        width="1.0"
+        height="1.414"
         front-hologram>
       </a-video>
 
@@ -102,10 +155,7 @@
       document.querySelector('#sandVid')
     ];
     target.addEventListener('targetFound', () => {
-      vids.forEach(v => {
-        v.currentTime = 0;
-        v.play();
-      });
+      vids.forEach(v => v.play());
     });
     target.addEventListener('targetLost', () => {
       vids.forEach(v => v.pause());
