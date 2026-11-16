@@ -3,29 +3,73 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>AKS (عکس) — 4D Multi-Layer AR</title>
+  <title>AKS (عکس) — 4D AR</title>
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
   <script>
-    // Removes black background so the sky, sand, Alif, and logo float in 3D space
-    AFRAME.registerComponent('additive-layer', {
-      schema: { opacity: { type: 'number', default: 1.0 } },
+    // Cleanly removes the black video background WITHOUT blowing out the gold color
+    // and splits the bottom sand (z = 0.03) from the floating Alif/AKS logo (z = 0.20) with ZERO double vision
+    AFRAME.registerComponent('clean-hologram', {
+      schema: {
+        mode: { type: 'string', default: 'full' }, // 'sky', 'sand', or 'logo'
+        brightness: { type: 'number', default: 0.85 }
+      },
       init: function () {
         this.el.addEventListener('loaded', () => {
           const mesh = this.el.getObject3D('mesh');
-          if (mesh && mesh.material) {
-            mesh.material.blending = THREE.AdditiveBlending;
-            mesh.material.transparent = true;
-            mesh.material.opacity = this.data.opacity;
-            mesh.material.depthWrite = false;
-            mesh.material.side = THREE.DoubleSide;
-          }
+          if (!mesh || !mesh.material) return;
+          const tex = mesh.material.map;
+          const mode = this.data.mode;
+          const bright = this.data.brightness;
+
+          mesh.material = new THREE.ShaderMaterial({
+            uniforms: {
+              uMap: { value: tex },
+              uBright: { value: bright }
+            },
+            transparent: true,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            vertexShader: `
+              varying vec2 vUv;
+              void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+              }
+            `,
+            fragmentShader: `
+              uniform sampler2D uMap;
+              uniform float uBright;
+              varying vec2 vUv;
+              void main() {
+                vec4 col = texture2D(uMap, vUv);
+                // Soft vignette on edges so no harsh rectangular box ever shows
+                vec2 d = abs(vUv - vec2(0.5)) * 2.0;
+                float edgeFade = (1.0 - smoothstep(0.82, 1.0, d.x)) * (1.0 - smoothstep(0.85, 1.0, d.y));
+
+                // Luma key: black becomes 100% transparent, gold stays rich bronze-gold
+                float luma = max(col.r, max(col.g, col.b));
+                float alpha = smoothstep(0.05, 0.35, luma) * edgeFade;
+
+                // Region mask so sand and logo sit at different 3D depths without duplicating
+                float regionMask = 1.0;
+                ${mode === 'sand' ? 'regionMask = 1.0 - smoothstep(0.34, 0.46, vUv.y);' : ''}
+                ${mode === 'logo' ? 'regionMask = smoothstep(0.32, 0.44, vUv.y);' : ''}
+
+                // Warm bronze-gold tone control (prevents neon yellow blowout)
+                vec3 bronzeGold = col.rgb * vec3(1.0, 0.88, 0.68) * uBright;
+                gl_FragColor = vec4(bronzeGold, alpha * regionMask);
+              }
+            `
+          });
         });
       }
     });
   </script>
   <style>
     body { margin: 0; overflow: hidden; background: #000; }
+    /* Hides the white VR button in the bottom-right corner */
+    .a-enter-vr, .a-orientation-modal { display: none !important; }
   </style>
 </head>
 <body>
@@ -44,56 +88,34 @@
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
     <a-entity id="target" mindar-image-target="targetIndex: 0">
-      <!-- PLANE 1: Dark Backing Box Deep Inside Poster (z = -0.30) -->
-      <a-plane color="#050403" position="0 0 -0.30" width="1.12" height="1.58" material="shader: flat; opacity: 0.95"></a-plane>
 
-      <!-- PLANE 2: Deepest Urdu Star-Trail Tunnel (z = -0.24) -->
+      <!-- 1. DEEP SKY LAYER (Single crisp copy inside the poster at z = -0.10) -->
       <a-video
         src="#skyVid"
-        position="0 0.03 -0.24"
-        width="0.96"
-        height="1.36"
-        additive-layer="opacity: 0.65">
+        position="0 0 -0.10"
+        width="1.05"
+        height="1.48"
+        clean-hologram="mode: sky; brightness: 0.95">
       </a-video>
 
-      <!-- PLANE 3: Main Rotating Urdu Star-Trail Sky (z = -0.12) -->
-      <a-video
-        src="#skyVid"
-        position="0 0 -0.12"
-        width="1.15"
-        height="1.62"
-        additive-layer="opacity: 0.95"
-        animation="property: position; dir: alternate; dur: 3200; easing: easeInOutSine; loop: true; from: 0 0 -0.14; to: 0 0 -0.08">
-      </a-video>
-
-      <!-- PLANE 4: Base Sand Dunes on the Poster Surface (z = 0.04) -->
+      <!-- 2. SAND HORIZON LAYER (Sits on the poster surface at z = 0.03) -->
       <a-video
         src="#sandVid"
-        position="0 0 0.04"
-        width="1.12"
-        height="1.58"
-        additive-layer="opacity: 0.90">
+        position="0 0 0.03"
+        width="1.06"
+        height="1.50"
+        clean-hologram="mode: sand; brightness: 0.80">
       </a-video>
 
-      <!-- PLANE 5: Main 4D Pop-Out — Rising Sand, Alif & AKS Logo (z = 0.22) -->
+      <!-- 3. FLOATING 4D ALIF & AKS LOGO (Single crisp copy floating out in mid-air at z = 0.20) -->
       <a-video
         src="#sandVid"
-        position="0 0 0.22"
-        width="1.25"
-        height="1.76"
-        additive-layer="opacity: 1.0"
-        animation="property: position; dir: alternate; dur: 2500; easing: easeInOutQuad; loop: true; from: 0 -0.01 0.18; to: 0 0.02 0.26">
+        position="0 0 0.20"
+        width="1.10"
+        height="1.55"
+        clean-hologram="mode: logo; brightness: 0.85">
       </a-video>
 
-      <!-- PLANE 6: Closest 4D Foreground Hologram Halo (z = 0.36) -->
-      <a-video
-        src="#sandVid"
-        position="0 0 0.36"
-        width="1.36"
-        height="1.92"
-        additive-layer="opacity: 0.55"
-        animation="property: position; dir: alternate; dur: 2500; easing: easeInOutQuad; loop: true; from: 0 0.01 0.32; to: 0 -0.01 0.40">
-      </a-video>
     </a-entity>
   </a-scene>
 
