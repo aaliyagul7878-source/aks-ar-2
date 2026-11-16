@@ -7,18 +7,24 @@
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
   <script>
-    // 1. Makes the black background of sand-layer.mp4 transparent
     AFRAME.registerComponent('front-hologram', {
+      schema: {
+        opacityBoost: { type: 'number', default: 1.0 }
+      },
       init: function () {
         const videoEl = document.querySelector('#sandVid');
         const tex = new THREE.VideoTexture(videoEl);
         tex.colorSpace = THREE.SRGBColorSpace;
+        const boost = this.data.opacityBoost;
 
         const applyShader = () => {
           const mesh = this.el.getObject3D('mesh');
           if (!mesh) return;
           mesh.material = new THREE.ShaderMaterial({
-            uniforms: { uMap: { value: tex } },
+            uniforms: {
+              uMap: { value: tex },
+              uBoost: { value: boost }
+            },
             transparent: true,
             depthWrite: false,
             side: THREE.DoubleSide,
@@ -31,12 +37,13 @@
             `,
             fragmentShader: `
               uniform sampler2D uMap;
+              uniform float uBoost;
               varying vec2 vUv;
               void main() {
                 vec4 col = texture2D(uMap, vUv);
                 float luma = max(col.r, max(col.g, col.b));
-                float alpha = smoothstep(0.06, 0.28, luma);
-                vec3 warmGold = col.rgb * vec3(0.95, 0.84, 0.65);
+                float alpha = smoothstep(0.06, 0.25, luma) * uBoost;
+                vec3 warmGold = col.rgb * vec3(0.98, 0.86, 0.65);
                 gl_FragColor = vec4(warmGold, alpha);
               }
             `
@@ -50,47 +57,6 @@
         }
       }
     });
-
-    // 2. Smooths position and damps extreme 3D angle skewing on dark targets
-    AFRAME.registerComponent('stabilize-poster', {
-      schema: {
-        target: { type: 'selector' }
-      },
-      init: function () {
-        this.rawPos = new THREE.Vector3();
-        this.rawQuat = new THREE.Quaternion();
-        this.rawScale = new THREE.Vector3();
-        this.euler = new THREE.Euler(0, 0, 0, 'YXZ');
-        this.targetQuat = new THREE.Quaternion();
-        this.isTracking = false;
-
-        this.data.target.addEventListener('targetFound', () => {
-          this.isTracking = true;
-          this.el.object3D.visible = true;
-        });
-        this.data.target.addEventListener('targetLost', () => {
-          this.isTracking = false;
-          this.el.object3D.visible = false;
-        });
-      },
-      tick: function () {
-        if (!this.isTracking) return;
-        const targetMat = this.data.target.object3D.matrix;
-        targetMat.decompose(this.rawPos, this.rawQuat, this.rawScale);
-
-        // Damp out erratic pitch/yaw spikes so the poster doesn't warp sideways
-        this.euler.setFromQuaternion(this.rawQuat, 'YXZ');
-        this.euler.x *= 0.25;
-        this.euler.y *= 0.25;
-        this.euler.z *= 0.6;
-        this.targetQuat.setFromEuler(this.euler);
-
-        // Smoothly interpolate position, rotation, and scale
-        this.el.object3D.position.lerp(this.rawPos, 0.3);
-        this.el.object3D.quaternion.slerp(this.targetQuat, 0.25);
-        this.el.object3D.scale.lerp(this.rawScale, 0.3);
-      }
-    });
   </script>
   <style>
     body { margin: 0; overflow: hidden; background: #000; }
@@ -99,7 +65,7 @@
 </head>
 <body>
   <a-scene
-    mindar-image="imageTargetSrc: ./targets.mind; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 5; missTolerance: 10;"
+    mindar-image="imageTargetSrc: ./targets.mind; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 5; missTolerance: 15;"
     color-space="sRGB"
     renderer="colorManagement: true, alpha: true"
     vr-mode-ui="enabled: false"
@@ -112,13 +78,10 @@
 
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- Raw MindAR tracker -->
-    <a-entity id="target" mindar-image-target="targetIndex: 0"></a-entity>
+    <!-- Directly anchored inside MindAR target so it NEVER floats off to the side -->
+    <a-entity id="target" mindar-image-target="targetIndex: 0">
 
-    <!-- Stabilized visual container -->
-    <a-entity visible="false" stabilize-poster="target: #target">
-
-      <!-- 1. SOLID BLACK COVER PLATE -->
+      <!-- 1. BLACK BASE PLATE (Pinned directly to poster surface z = 0) -->
       <a-plane
         color="#040302"
         position="0 0 0.0"
@@ -127,7 +90,7 @@
         material="shader: flat; opacity: 1.0">
       </a-plane>
 
-      <!-- 2. SINGLE SKY VIDEO LAYER -->
+      <!-- 2. SKY VIDEO LAYER (Slightly above base at z = 0.01) -->
       <a-video
         src="#skyVid"
         position="0 0 0.01"
@@ -136,14 +99,21 @@
         material="shader: flat">
       </a-video>
 
-      <!-- 3. SINGLE SAND + ALIF + AKS LOGO LAYER -->
-      <a-video
-        src="#sandVid"
-        position="0 0 0.025"
+      <!-- 3. MID 3D HOLOGRAM LAYER (Floats out at z = 0.08) -->
+      <a-plane
+        position="0 0 0.08"
         width="1.0"
         height="1.414"
-        front-hologram>
-      </a-video>
+        front-hologram="opacityBoost: 0.85">
+      </a-plane>
+
+      <!-- 4. FRONT 4D POP-OUT LAYER (Floats far forward at z = 0.16 for parallax depth) -->
+      <a-plane
+        position="0 0 0.16"
+        width="1.02"
+        height="1.44"
+        front-hologram="opacityBoost: 1.0">
+      </a-plane>
 
     </a-entity>
   </a-scene>
